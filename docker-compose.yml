@@ -1,0 +1,25 @@
+services:
+   report-bot:
+     image: ghcr.io/riskymh/report-bot:latest
+     build: .
+     restart: unless-stopped
+     init: true
+     extra_hosts:
+       - "host.docker.internal:host-gateway"
+     environment:
+       DATABASE_URL: ${DATABASE_URL:-sqlite:///data/report-bot.sqlite}
+       REPORT_CACHE_DB: ${REPORT_CACHE_DB:-/data/report-cache.sqlite}
+       DISCORD_TOKEN: ${DISCORD_TOKEN:?REQUIRED}
+       NODE_ENV: production
+       FORCE_COLOR: 1
+     volumes:
+        - data:/data
+     deploy:
+       resources:
+         limits:
+           memory: 128M
+         reservations:
+           memory: 32M
+
+volumes:
+  data:

@@ -1,0 +1,25 @@
+{
+  "name": "report-bot",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "main": "src/bot.ts",
+  "scripts": {
+    "start": "bun src/bot.ts",
+    "dev": "bun --watch src/bot.ts",
+    "build:standalone": "bun build src/bot.ts --outfile dist/bot --minify --target=bun --bytecode --production --compile --format=esm --sourcemap",
+    "docker:build": "docker compose build",
+    "docker:deploy": "docker stack ls --format '{{.Name}}' | grep -q '^report-bot$' && { echo 'Error: Stack exists'; false; } || { docker compose pull && docker compose up -d; }",
+    "docker:logs": "docker compose logs -f"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@discordjs/core": "3.0.0-dev.1781396633-c6c78868c",
+    "@discordjs/rest": "3.0.0-dev.1781396633-c6c78868c",
+    "@discordjs/ws": "3.0.0-dev.1781396633-c6c78868c",
+    "discord-api-types": "^0.38.53"
+  }
+}
