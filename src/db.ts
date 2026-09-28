@@ -5,6 +5,7 @@ export type IConfig = {
   report_channel_id: string | null;
   anonymous_enabled: boolean;
   urgent_role_id: string | null;
+  use_threads: boolean;
 };
 
 export const db = new SQL(process.env.DATABASE_URL ?? "sqlite://report-bot.sqlite");
@@ -27,9 +28,22 @@ export async function initDb() {
       guild_id TEXT PRIMARY KEY,
       report_channel_id TEXT,
       anonymous_enabled INTEGER NOT NULL DEFAULT 0,
-      urgent_role_id TEXT
+      urgent_role_id TEXT,
+      use_threads INTEGER NOT NULL DEFAULT 0
     );
   `;
+
+  // migration for existing installs created before use_threads existed
+  try {
+    if (db.options.adapter === "sqlite") {
+      await db`ALTER TABLE config ADD COLUMN use_threads INTEGER NOT NULL DEFAULT 0;`;
+    } else {
+      await db`ALTER TABLE config ADD COLUMN IF NOT EXISTS use_threads INTEGER NOT NULL DEFAULT 0;`;
+    }
+  } catch (err) {
+    const msg = String(err);
+    if (!/duplicate|already exists/i.test(msg)) throw err;
+  }
 }
 
 export async function removeGuild(guild_id: string): Promise<void> {
@@ -50,16 +64,18 @@ export async function getConfig(guild_id: string): Promise<IConfig> {
     report_channel_id: row?.report_channel_id ?? null,
     anonymous_enabled: !!row?.anonymous_enabled,
     urgent_role_id: row?.urgent_role_id ?? null,
+    use_threads: !!row?.use_threads,
   };
 }
 
-export async function setConfig(guild_id: string, { report_channel_id, anonymous_enabled, urgent_role_id }: Omit<IConfig, "guild_id">): Promise<void> {
+export async function setConfig(guild_id: string, { report_channel_id, anonymous_enabled, urgent_role_id, use_threads }: Omit<IConfig, "guild_id">): Promise<void> {
   await ensureConfig(guild_id);
   await db`
     UPDATE config SET
       report_channel_id = ${report_channel_id},
       anonymous_enabled = ${anonymous_enabled ? 1 : 0},
-      urgent_role_id = ${urgent_role_id}
+      urgent_role_id = ${urgent_role_id},
+      use_threads = ${use_threads ? 1 : 0}
     WHERE guild_id = ${guild_id};
   `;
 }

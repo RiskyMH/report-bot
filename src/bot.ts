@@ -100,6 +100,12 @@ function uniqueFileNames(atts: { filename?: string }[]): string[] {
 const truncate = (text: string, max: number) =>
     text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 
+// forum posts require a thread name (1-100 chars); starter message keeps the usual components
+function forumThreadName(base: string): string {
+    const name = base.trim() || "Report";
+    return truncate(name, 100);
+}
+
 function isSmall(a: cache.StoredAttachment): boolean {
     return a.s > 0 && a.s <= MAX_UPLOAD_BYTES;
 }
@@ -336,7 +342,7 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                             min_values: 1,
                             max_values: 1,
                             placeholder: "#mod-reports",
-                            channel_types: [ChannelType.GuildText],
+                            channel_types: [ChannelType.GuildText, ChannelType.PrivateThread, ChannelType.PublicThread, ChannelType.GuildForum],
                             required: true,
                             default_values: config.report_channel_id ? [{ id: config.report_channel_id, type: SelectMenuDefaultValueType.Channel }] : [],
                         },
@@ -367,6 +373,7 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
             let channelId = prevConfig.report_channel_id;
             let anonymous = prevConfig.anonymous_enabled;
             let urgentRole = prevConfig.urgent_role_id;
+            let useThreads = prevConfig.use_threads;
 
             for (const label of interaction.data.components) {
                 if (label.type !== ComponentType.Label) continue;
@@ -388,33 +395,54 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                         allowed_mentions: {},
                     });
                 }
-                const needed = PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages;
+                // forum/media channels receive one thread per report instead of plain messages
+                useThreads = ch.type === ChannelType.GuildForum;
+                const isThread = ch.type === ChannelType.PrivateThread || ch.type === ChannelType.PublicThread;
+
+                const needed = useThreads
+                    ? PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessagesInThreads | PermissionFlagsBits.SendMessages
+                    : isThread
+                        ? PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessagesInThreads | PermissionFlagsBits.SendMessages
+                        : PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages;
+                const neededLabels = useThreads
+                    ? "**View Channel**, **Create Posts** and **Send Messages in Posts**"
+                    : isThread
+                        ? "**View Channel**, **Send Messages in Threads** and **Send Messages**"
+                        : "**View Channel** and **Send Messages**";
+
                 if (!hasPerms(BigInt(ch.app_permissions ?? "0"), needed)) {
                     return api.interactions.reply(interaction.id, interaction.token, {
-                        content: `I can't send reports to <#${channelId}> — I need the **View Channel** and **Send Messages** permissions there.\n-# No settings have been changed.`,
+                        content: `I can't send reports to <#${channelId}> — I need the ${neededLabels} permissions there.\n-# No settings have been changed.`,
                         flags: MessageFlags.Ephemeral,
                         allowed_mentions: {},
                     });
                 }
                 if (!hasPerms(BigInt(ch.permissions ?? "0"), needed)) {
                     return api.interactions.reply(interaction.id, interaction.token, {
-                        content: `You need the **View Channel** and **Send Messages** permissions in <#${channelId}> to set it as the report channel.\n-# No settings have been changed.`,
+                        content: `You need the ${neededLabels} permissions in <#${channelId}> to set it as the report channel.\n-# No settings have been changed.`,
                         flags: MessageFlags.Ephemeral,
                         allowed_mentions: {},
                     });
                 }
             }
 
-            await db.setConfig(guildId, { report_channel_id: channelId, anonymous_enabled: anonymous, urgent_role_id: urgentRole });
+            await db.setConfig(guildId, { report_channel_id: channelId, anonymous_enabled: anonymous, urgent_role_id: urgentRole, use_threads: useThreads });
 
-            if (channelId && channelId !== prevConfig.report_channel_id) {
-                api.channels.createMessage(channelId, { content: "⚙️ This channel will now receive user reports.", allowed_mentions: {} }).catch(() => null);
+            if (channelId && (channelId !== prevConfig.report_channel_id || useThreads !== prevConfig.use_threads)) {
+                if (useThreads) {
+                    api.channels.createForumThread(channelId, {
+                        name: forumThreadName("Reports setup complete"),
+                        message: { content: "⚙️ This forum will now receive user reports (one thread per report).", allowed_mentions: {} },
+                    }).catch(() => null);
+                } else {
+                    api.channels.createMessage(channelId, { content: "⚙️ This channel will now receive user reports.", allowed_mentions: {} }).catch(() => null);
+                }
             }
 
             await api.interactions.reply(interaction.id, interaction.token, {
                 content:
                     "Report config updated!\n" +
-                    `-# - Reports go to: ${channelId ? `<#${channelId}>` : "*(not set)*"}\n` +
+                    `-# - Reports go to: ${channelId ? `<#${channelId}>${useThreads ? " (threads)" : ""}` : "*(not set)*"}\n` +
                     `-# - Anonymous reporting: **${anonymous ? "enabled" : "disabled"}**\n` +
                     `-# - Urgent role: ${urgentRole ? `<@&${urgentRole}>` : "*(not set)*"}`,
                 allowed_mentions: {},
@@ -646,13 +674,23 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
             const now = Math.floor(Date.now() / 1000);
 
             try {
+                const useThreads = config.use_threads;
+                const targetChannelId = config.report_channel_id!;
                 if (kindRaw === "x") {
                     if (!context) return replyEphemeral("You need to describe what you're reporting.");
                     const files = await downloadSmall(evidenceAtts);
-                    await api.channels.createMessage(config.report_channel_id, {
-                        files,
-                        ...manualComponents(context, evidenceAtts, user, anonymous, config.urgent_role_id, pingUrgent),
-                    });
+                    const body = manualComponents(context, evidenceAtts, user, anonymous, config.urgent_role_id, pingUrgent);
+                    if (useThreads) {
+                        await api.channels.createForumThread(targetChannelId, {
+                            name: forumThreadName(`Report — ${context.split("\n")[0]?.slice(0, 60) || user.username}`),
+                            message: { ...body, files },
+                        });
+                    } else {
+                        await api.channels.createMessage(targetChannelId, {
+                            files,
+                            ...body,
+                        });
+                    }
                 } else {
                     const row = kindRaw === "m" ? cache.getMessageReport(key!) : cache.getUserReport(key!);
                     if (!row || Date.now() - row.last_at > GROUP_FRESH_MS) {
@@ -665,7 +703,37 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                     if (pingUrgent) row.urgent = true;
                     cache.appendReporter(kindRaw as "m" | "u", key!, { u: anonymous ? "anonymous" : user.id, t: now, c: context });
 
+                    const threadName = kindRaw === "m"
+                        ? forumThreadName(`Report — @${(row as cache.MessageReportRow).username || (row as cache.MessageReportRow).author_id}${(row as cache.MessageReportRow).source_channel_name ? ` in #${(row as cache.MessageReportRow).source_channel_name}` : ""}`)
+                        : forumThreadName(`Report — @${(row as cache.UserReportRow).username}`);
+
+                    // forum threads: thread id == starter message id, so we store the thread id
+                    // as the log channel and edit the starter via editMessage(threadId, threadId)
+                    const swapAttachmentUrls = (mRow: cache.MessageReportRow, attachments: { filename: string; url: string }[] | Record<string, { filename: string; url: string }> | undefined) => {
+                        if (!attachments) return;
+                        const byName = new Map(Object.values(attachments).map(a => [a.filename, a.url]));
+                        for (const a of [...mRow.images, ...mRow.files]) {
+                            const freshUrl = byName.get(a.n);
+                            if (freshUrl) a.u = freshUrl;
+                        }
+                    };
+                    const createNewLog = async (newBody: RESTPostAPIChannelMessageJSONBody, newFiles: RawFile[]) => {
+                        if (useThreads) {
+                            const thread = await api.channels.createForumThread(targetChannelId, {
+                                name: threadName,
+                                message: { ...newBody, files: newFiles },
+                            });
+                            // fetch the starter to resolve our own stable cdn urls for attachments
+                            const starter = await api.channels.getMessage(thread.id, thread.id).catch(() => null);
+                            return { logChannelId: thread.id as string, logMessageId: thread.id as string, attachments: starter?.attachments };
+                        }
+                        const posted = await api.channels.createMessage(targetChannelId, { files: newFiles, ...newBody });
+                        return { logChannelId: targetChannelId as string, logMessageId: posted.id as string, attachments: posted.attachments };
+                    };
+
                     let logMessageId = row.log_message_id;
+                    // where the log message actually lives (thread id for forum posts)
+                    let logChannelId = prevLogChannelId;
                     let files: RawFile[] = [];
                     if (!logMessageId && kindRaw === "m") {
                         // download first so failures demote to links before the body is built
@@ -679,19 +747,16 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                             // edit where the message actually lives, even if the configured channel changed
                             await api.channels.editMessage(prevLogChannelId, logMessageId, body);
                         } else {
-                            const posted = await api.channels.createMessage(config.report_channel_id, { files, ...body });
-                            logMessageId = posted.id;
+                            const created = await createNewLog(body, files);
+                            logMessageId = created.logMessageId;
+                            logChannelId = created.logChannelId;
                             if (kindRaw === "m") {
                                 // swap source urls for our own stable cdn urls
-                                const byName = new Map(Object.values(posted.attachments ?? {}).map(a => [a.filename, a.url]));
-                                for (const a of [...(row as cache.MessageReportRow).images, ...(row as cache.MessageReportRow).files]) {
-                                    const freshUrl = byName.get(a.n);
-                                    if (freshUrl) a.u = freshUrl;
-                                }
+                                swapAttachmentUrls(row as cache.MessageReportRow, created.attachments);
                             }
                         }
                     } catch (err) {
-                        if (!(err instanceof DiscordAPIError && err.code === RESTJSONErrorCodes.UnknownMessage)) throw err;
+                        if (!(err instanceof DiscordAPIError && (err.code === RESTJSONErrorCodes.UnknownMessage || err.code === RESTJSONErrorCodes.UnknownChannel))) throw err;
                         logMessageId = null;
                     }
 
@@ -703,31 +768,38 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                         }
                         // rebuild: some attachments may have just been demoted to links
                         const retryBody = buildGroupedBody(kindRaw as "m" | "u", row, config.urgent_role_id, pingUrgent);
-                        const posted = await api.channels.createMessage(config.report_channel_id, { files: retryFiles, ...retryBody });
-                        logMessageId = posted.id;
+                        const created = await createNewLog(retryBody, retryFiles);
+                        logMessageId = created.logMessageId;
+                        logChannelId = created.logChannelId;
                         if (kindRaw === "m") {
-                            const byName = new Map(Object.values(posted.attachments ?? {}).map(a => [a.filename, a.url]));
-                            for (const a of [...(row as cache.MessageReportRow).images, ...(row as cache.MessageReportRow).files]) {
-                                const freshUrl = byName.get(a.n);
-                                if (freshUrl) a.u = freshUrl;
-                            }
+                            swapAttachmentUrls(row as cache.MessageReportRow, created.attachments);
                         }
                     }
                     row.log_message_id = logMessageId;
+                    row.log_channel_id = logChannelId;
 
                     // targeted updates only — reporters already appended, parent just tracks the log target/freshness
-                    cache.setReportLogTarget(kindRaw as "m" | "u", key!, config.report_channel_id, logMessageId);
+                    cache.setReportLogTarget(kindRaw as "m" | "u", key!, logChannelId, logMessageId);
                     if (pingUrgent && !wasUrgent && config.urgent_role_id) {
                         cache.markReportUrgent(kindRaw as "m" | "u", key!);
                     }
 
                     // original wasn't urgent but an existing grouped message just became urgent -> reply pinging the mod role (one-off)
                     if (!wasUrgent && pingUrgent && wasExisting && config.urgent_role_id) {
-                        api.channels.createMessage(config.report_channel_id, {
-                            content: `<@&${config.urgent_role_id}> - a report was just marked as urgent`,
-                            message_reference: { message_id: logMessageId },
-                            allowed_mentions: { parse: [], roles: [config.urgent_role_id] },
-                        }).catch(() => null);
+                        if (logChannelId === logMessageId) {
+                            // forum thread: reply inside the thread to the starter
+                            api.channels.createMessage(logMessageId, {
+                                content: `<@&${config.urgent_role_id}> - a report was just marked as urgent`,
+                                message_reference: { message_id: logMessageId },
+                                allowed_mentions: { parse: [], roles: [config.urgent_role_id] },
+                            }).catch(() => null);
+                        } else {
+                            api.channels.createMessage(config.report_channel_id, {
+                                content: `<@&${config.urgent_role_id}> - a report was just marked as urgent`,
+                                message_reference: { message_id: logMessageId },
+                                allowed_mentions: { parse: [], roles: [config.urgent_role_id] },
+                            }).catch(() => null);
+                        }
                     }
                 }
             } catch (err) {
