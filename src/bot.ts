@@ -480,6 +480,7 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
 
                 const attributedUser = msg.author.bot ? msg.interaction_metadata?.user ?? msg.interaction?.user ?? null : msg.author;
                 if (!attributedUser) return ephemeralReply("You can't report bot messages.");
+                if (attributedUser.id === userId || msg.author.id === userId) return ephemeralReply("You can't report your own message.");
 
                 const snap = snapshotOf(msg);
                 // edits change the evidence -> treat as its own report
@@ -531,6 +532,10 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                 const user = resolved?.users?.[targetId!];
                 const member = targetId ? resolved?.members?.[targetId] : undefined;
                 if (!user || !targetId) return ephemeralReply("That user couldn't be loaded anymore.");
+                if (targetId === userId) return ephemeralReply("You can't report yourself.");
+                if (member?.permissions !== undefined && hasPerms(BigInt(member.permissions), PermissionFlagsBits.Administrator)) {
+                    return ephemeralReply("You can't report an admin.");
+                }
 
                 // a changed profile is different evidence -> its own report, like message edits
                 const profileStamp = Bun.hash([user.username, user.global_name ?? "", user.avatar ?? "", member?.avatar ?? "", user.banner ?? "", member?.banner ?? ""].join("|")).toString(16);
