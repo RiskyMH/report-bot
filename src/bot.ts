@@ -145,11 +145,12 @@ function messageContentComponents(row: cache.MessageReportRow): NonNullable<REST
         },
         ...(smallImages.length > 0 ? [{
             type: ComponentType.MediaGallery,
-            items: smallImages.map(a => ({ media: { url: `attachment://${a.n}` } })),
+            items: smallImages.map(a => ({ media: { url: `attachment://${a.n}` }, spoiler: true })),
         }] : []),
         ...(smallFiles.length > 0 ? smallFiles.map(a => ({
             type: ComponentType.File,
             file: { url: `attachment://${a.n}` },
+            // spoiler: true,
         })) : []),
         {
             type: ComponentType.TextDisplay,
@@ -260,7 +261,7 @@ function manualComponents(context: string, evidence: cache.StoredAttachment[], u
         if (images.length > 0) {
             inner.push({
                 type: ComponentType.MediaGallery,
-                items: images.map(a => ({ media: { url: `attachment://${a.n}` } })),
+                items: images.map(a => ({ media: { url: `attachment://${a.n}` }, spoiler: true })),
             });
         }
         if (files.length > 0) {
@@ -268,6 +269,7 @@ function manualComponents(context: string, evidence: cache.StoredAttachment[], u
                 inner.push({
                     type: ComponentType.File,
                     file: { url: `attachment://${a.n}` },
+                    // spoiler: true,
                 });
             }
         }
