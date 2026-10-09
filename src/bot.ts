@@ -386,16 +386,19 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                 if (c.type === ComponentType.Checkbox && c.custom_id === "anonymous_enabled") anonymous = c.value;
             }
 
+            const reject = (content: string) =>
+                api.interactions.reply(interaction.id, interaction.token, {
+                    content: `${content}\n-# No settings have been changed.`,
+                    flags: MessageFlags.Ephemeral,
+                    allowed_mentions: {},
+                });
+
             // early permission check via the resolved channel so we don't save a broken config
             if (channelId) {
                 const resolvedChannels = ("resolved" in interaction.data ? interaction.data.resolved?.channels : undefined) ?? {};
                 const ch = resolvedChannels[channelId];
                 if (!ch) {
-                    return api.interactions.reply(interaction.id, interaction.token, {
-                        content: `<#${channelId}> couldn't be found — it may have been deleted.\n-# No settings have been changed.`,
-                        flags: MessageFlags.Ephemeral,
-                        allowed_mentions: {},
-                    });
+                    return reject(`<#${channelId}> couldn't be found — it may have been deleted.`);
                 }
                 // forum/media channels receive one thread per report instead of plain messages
                 useThreads = ch.type === ChannelType.GuildForum;
@@ -413,19 +416,22 @@ client.on(GatewayDispatchEvents.InteractionCreate, async ({ data: interaction, a
                         : "**View Channel** and **Send Messages**";
 
                 if (!hasPerms(BigInt(ch.app_permissions ?? "0"), needed)) {
-                    return api.interactions.reply(interaction.id, interaction.token, {
-                        content: `I can't send reports to <#${channelId}> — I need the ${neededLabels} permissions there.\n-# No settings have been changed.`,
-                        flags: MessageFlags.Ephemeral,
-                        allowed_mentions: {},
-                    });
+                    return reject(`I can't send reports to <#${channelId}> — I need the ${neededLabels} permissions there.`);
                 }
                 if (!hasPerms(BigInt(ch.permissions ?? "0"), needed)) {
-                    return api.interactions.reply(interaction.id, interaction.token, {
-                        content: `You need the ${neededLabels} permissions in <#${channelId}> to set it as the report channel.\n-# No settings have been changed.`,
-                        flags: MessageFlags.Ephemeral,
-                        allowed_mentions: {},
-                    });
+                    return reject(`You need the ${neededLabels} permissions in <#${channelId}> to set it as the report channel.`);
                 }
+
+                if (urgentRole) {
+                    const role = interaction.data.resolved?.roles?.[urgentRole];
+                    if (role) {
+                        if (!role.mentionable && !hasPerms(BigInt(ch.app_permissions ?? "0"), PermissionFlagsBits.MentionEveryone)) {
+                            return reject(`The urgent role <@&${urgentRole}> isn't mentionable and I don't have permission to mention it, so reporters can't ping it.`);
+                        }
+                    }
+                }
+            } else {
+                return reject("You must select a report channel to save the config.");
             }
 
             await db.setConfig(guildId, { report_channel_id: channelId, anonymous_enabled: anonymous, urgent_role_id: urgentRole, use_threads: useThreads });
